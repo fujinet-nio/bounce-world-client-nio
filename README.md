@@ -43,7 +43,7 @@ You will need:
 - Open Watcom for the MS-DOS target
 - `cl65` / cc65 for the 8-bit targets
 - `FUJINET_NIO_LIB` pointing at a checkout of `fujinet-nio-lib`
-- The `bbc` target fork of cc65 from https://github.com/markjfisher/cc65 to compile for the BBC
+- The `bbc` target fork of cc65 from https://github.com/fujinet-nio/cc65 to compile for the BBC
 
 The Linux client links against the direct NIO build of `fujinet-nio-lib`. The
 default MS-DOS build links against the `msdos-f5` backend, so it talks to the
