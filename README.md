@@ -4,7 +4,7 @@
 
 - Server: https://github.com/markjfisher/bounce-world
 - Transport/device project: https://github.com/markjfisher/fujinet-nio
-- Client library: https://github.com/markjfisher/fujinet-nio-lib
+- Client library: https://github.com/fujinet-nio/fujinet-nio-lib
 
 This client uses the newer `fujinet-nio` stack rather than the older `fujinet-lib` stack. The shared client code is written as portable C99, and `fujinet-nio-lib` is POSIX/C99 compatible, which makes it possible to build and run a native Linux version of the client alongside the retro targets.
 
@@ -261,4 +261,4 @@ make test-host
 
 - Bouncy World server: https://github.com/markjfisher/bounce-world
 - FujiNet NIO device/service: https://github.com/markjfisher/fujinet-nio
-- FujiNet NIO client library: https://github.com/markjfisher/fujinet-nio-lib
+- FujiNet NIO client library: https://github.com/fujinet-nio/fujinet-nio-lib
