@@ -131,3 +131,16 @@ test-host-stream:
 	build/test_stream_network.host
 
 test-host: test-host-stream
+
+.PHONY: test-linux-text
+test-linux-text:
+	@mkdir -p build
+	gcc -Wall -Wextra -Werror -std=c99 -Isrc/include -Isrc/linux -I$(FUJINET_NIO_LIB)/include \
+	  src/common/display.c src/common/show_info.c src/common/data.c \
+	  src/linux/conio.c src/linux/double_buffer.c src/linux/full_clr.c src/linux/playfield_clr.c \
+	  tests/host/test_linux_display.c -o build/test_linux_display.host
+	python3 tests/host/test_linux_terminal.py
+	gcc -Wall -Wextra -Werror -std=c99 -Isrc/include -Isrc/linux -I$(FUJINET_NIO_LIB)/include \
+	  src/common/run_simulation.c src/common/data.c tests/host/test_linux_empty_poll.c \
+	  -o build/test_linux_empty_poll.host
+	build/test_linux_empty_poll.host

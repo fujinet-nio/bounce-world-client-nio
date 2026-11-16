@@ -89,6 +89,10 @@ void run_simulation(void)
 
         /* Nothing received this round - re-poll */
         if (n <= 0) {
+#ifdef __linux__
+            handle_kb();
+            network_retry_pause();
+#endif
             continue;
         }
 

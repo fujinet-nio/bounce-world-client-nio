@@ -256,6 +256,10 @@ make test-host
 - The MS-DOS target uses the same shared gameplay/network client logic and a small DOS console shim.
 - The Linux platform layer implements the cc65-style console APIs needed by the client, using a terminal-friendly renderer.
 - Neutral shape codes from the server are converted back into real box-drawing and block characters on Linux terminals.
+- Frames are composed in memory and only changed cells are sent to the terminal.
+  The Info bar (`I`) retains its bottom two rows across frames. Use an 80x24 or
+  larger terminal. Normal exit, SIGINT and SIGTERM restore terminal input and cursor.
+- `make test-linux-text` checks the real renderer and terminal cleanup under a PTY.
 
 ## Related projects
 

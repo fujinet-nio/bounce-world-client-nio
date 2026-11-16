@@ -1,6 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,12 +10,69 @@
 #include <unistd.h>
 
 #include "conio.h"
+#include "screen.h"
 
 static struct termios saved_termios;
 static uint8_t termios_saved = 0;
 static uint8_t raw_mode_enabled = 0;
 static uint8_t cursor_x = 0;
 static uint8_t cursor_y = 0;
+
+typedef struct { char glyph[5]; uint8_t reverse; } Cell;
+static Cell cells[SCREEN_HEIGHT][SCREEN_WIDTH];
+static Cell shown[SCREEN_HEIGHT][SCREEN_WIDTH];
+static uint8_t in_frame, reverse_on, shown_valid;
+static volatile sig_atomic_t interrupted;
+
+static void on_signal(int sig) { interrupted = sig; }
+
+void conio_clear_rows(uint8_t rows)
+{
+    unsigned x, y;
+    if (rows > SCREEN_HEIGHT) rows = SCREEN_HEIGHT;
+    for (y = 0; y < rows; ++y) {
+        for (x = 0; x < SCREEN_WIDTH; ++x) {
+            memset(&cells[y][x], 0, sizeof(Cell));
+            cells[y][x].glyph[0] = ' ';
+        }
+        if (!in_frame) fprintf(stdout, "\033[%u;1H\033[2K", y + 1);
+    }
+    if (!in_frame) { shown_valid = 0; fflush(stdout); }
+    cursor_x = cursor_y = 0;
+}
+
+void conio_begin_frame(void) { in_frame = 1; }
+
+void conio_end_frame(void)
+{
+    unsigned x, y;
+    int attr = -1;
+    /* Disable wrapping while touching the bottom-right cell: it must not
+     * scroll the status bar away on an exactly 80x24 terminal. */
+    fputs("\033[?7l", stdout);
+    for (y = 0; y < SCREEN_HEIGHT; ++y) {
+        int contiguous = 0;
+        for (x = 0; x < SCREEN_WIDTH; ++x) {
+            Cell *c = &cells[y][x];
+            if (shown_valid && !memcmp(c, &shown[y][x], sizeof(Cell))) {
+                contiguous = 0;
+                continue;
+            }
+            if (!contiguous) fprintf(stdout, "\033[%u;%uH", y + 1, x + 1);
+            if (attr != c->reverse) {
+                fputs(c->reverse ? "\033[7m" : "\033[27m", stdout);
+                attr = c->reverse;
+            }
+            fputs(c->glyph[0] ? c->glyph : " ", stdout);
+            contiguous = 1;
+        }
+    }
+    fputs("\033[0m\033[?7h", stdout);
+    fflush(stdout);
+    memcpy(shown, cells, sizeof(cells));
+    shown_valid = 1;
+    in_frame = 0;
+}
 
 static void restore_terminal(void)
 {
@@ -23,7 +81,7 @@ static void restore_terminal(void)
         raw_mode_enabled = 0;
     }
 
-    fputs("\033[0m\033[?25h", stdout);
+    fputs("\033[0m\033[?7h\033[?25h", stdout);
     fflush(stdout);
 }
 
@@ -41,6 +99,8 @@ static void ensure_terminal_mode(void)
         }
         termios_saved = 1;
         atexit(restore_terminal);
+        signal(SIGINT, on_signal);
+        signal(SIGTERM, on_signal);
     }
 
     if (raw_mode_enabled) {
@@ -72,13 +132,25 @@ static void update_cursor_after_char(char c)
 
 static void output_cell(const char *glyph)
 {
-    fputs(glyph, stdout);
-    fflush(stdout);
+    if (in_frame) {
+        if (cursor_x < SCREEN_WIDTH && cursor_y < SCREEN_HEIGHT) {
+            Cell *c = &cells[cursor_y][cursor_x];
+            memset(c, 0, sizeof(*c));
+            strncpy(c->glyph, glyph, sizeof(c->glyph) - 1);
+            c->reverse = reverse_on;
+        }
+    } else {
+        fputs(glyph, stdout);
+        fflush(stdout);
+        shown_valid = 0;
+    }
     cursor_x++;
 }
 
 void clrscr(void)
 {
+    if (in_frame) { conio_clear_rows(SCREEN_HEIGHT); return; }
+    shown_valid = 0;
     fputs("\033[2J\033[H", stdout);
     fflush(stdout);
     cursor_x = 0;
@@ -87,8 +159,10 @@ void clrscr(void)
 
 void gotoxy(uint8_t x, uint8_t y)
 {
-    fprintf(stdout, "\033[%u;%uH", (unsigned int)y + 1U, (unsigned int)x + 1U);
-    fflush(stdout);
+    if (!in_frame) {
+        fprintf(stdout, "\033[%u;%uH", (unsigned int)y + 1U, (unsigned int)x + 1U);
+        fflush(stdout);
+    }
     cursor_x = x;
     cursor_y = y;
 }
@@ -138,9 +212,13 @@ void cputc(char c)
         case (unsigned char)CH_CROSS_DIAG: output_cell("▚"); break;
         case (unsigned char)CH_CROSS_REV:  output_cell("▞"); break;
         default:
-            fputc(c, stdout);
-            fflush(stdout);
-            update_cursor_after_char(c);
+            if (c == '\r' || c == '\n') {
+                if (!in_frame) { fputc(c, stdout); fflush(stdout); }
+                update_cursor_after_char(c);
+            } else {
+                char glyph[2] = {c, 0};
+                output_cell(glyph);
+            }
             break;
     }
 }
@@ -166,6 +244,8 @@ void cputsxy(uint8_t x, uint8_t y, const char *s)
 
 void revers(uint8_t on)
 {
+    reverse_on = !!on;
+    if (in_frame) return;
     fputs(on ? "\033[7m" : "\033[27m", stdout);
     fflush(stdout);
 }
@@ -193,6 +273,7 @@ uint8_t kbhit(void)
     int result;
 
     ensure_terminal_mode();
+    if (interrupted) exit(128 + interrupted);
 
     FD_ZERO(&read_fds);
     FD_SET(STDIN_FILENO, &read_fds);
@@ -209,10 +290,12 @@ char cgetc(void)
     ssize_t nread;
 
     ensure_terminal_mode();
+    if (interrupted) exit(128 + interrupted);
 
     do {
         nread = read(STDIN_FILENO, &c, 1);
-    } while (nread < 0 && errno == EINTR);
+    } while (nread < 0 && errno == EINTR && !interrupted);
+    if (interrupted) exit(128 + interrupted);
 
     if (nread <= 0) {
         return '\0';

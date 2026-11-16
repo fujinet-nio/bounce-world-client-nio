@@ -35,6 +35,9 @@
 #define CH_DEL       127
 #define CH_CURS_LEFT 8
 
+void conio_begin_frame(void);
+void conio_end_frame(void);
+void conio_clear_rows(uint8_t rows);
 void clrscr(void);
 void gotoxy(uint8_t x, uint8_t y);
 void gotox(uint8_t x);
