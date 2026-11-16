@@ -17,6 +17,7 @@ Current build targets are:
 - `atari`
 - `bbc`
 - `linux`
+- `linux-gfx` (optional SDL desktop window)
 - `msdos`
 - `amiga`
 
@@ -31,8 +32,9 @@ coordinates that may straddle the viewport edge and are clipped when drawn.
 The Amiga registration still carries protocol version `3` in its CSV — that
 field is informational data only: feature selection happens exclusively through
 the capabilities bitmask.
-All other targets send no capabilities field and keep the exact legacy
-behaviour.
+The optional Linux graphical client requests wide coordinates and body IDs
+(`0x5`), with a 960x576 pixel viewport and a 40x24 world region. The terminal
+Linux and other legacy targets send no capabilities field.
 
 ## Build prerequisites
 
@@ -167,6 +169,23 @@ prefixed with a 2-byte little-endian total packet size; the read helpers in
 `app_data` directly) when interpreting response data stored in the shared buffer.
 
 If you omit the `tcp://` prefix, the client adds it automatically.
+
+## Graphical Linux client
+
+A separate SDL window adds graphical setup and a shape gallery, colored outlines,
+interpolated motion, a persistent keyboard legend and optional collision flashes:
+
+```sh
+make linux-gfx
+FN_PORT=/path/to/pts-port ./build/bwcn.linux-gfx
+# Offline preview without a FujiNet:
+./build/bwcn.linux-gfx --demo
+```
+
+The terminal client remains `build/bwcn.linux`. See [Linux clients](docs/linux-clients.md)
+for SDL/font dependencies, controls, verification and current shape limitations.
+The graphical client requests wide coordinates and body IDs; it does not request
+rotation or inherit the unfinished Amiga hand-authored shape overrides.
 
 ## Running on MS-DOS
 

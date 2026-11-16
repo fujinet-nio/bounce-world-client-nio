@@ -144,3 +144,9 @@ test-linux-text:
 	  src/common/run_simulation.c src/common/data.c tests/host/test_linux_empty_poll.c \
 	  -o build/test_linux_empty_poll.host
 	build/test_linux_empty_poll.host
+
+.PHONY: linux-gfx test-linux-gfx test-linux-network
+linux-gfx:
+	$(MAKE) -f makefiles/linux-gfx.mk PROGRAM=$(PROGRAM)
+test-linux-gfx test-linux-network:
+	$(MAKE) -f makefiles/linux-gfx.mk $@
