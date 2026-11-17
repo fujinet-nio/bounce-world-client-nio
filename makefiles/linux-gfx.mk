@@ -29,18 +29,18 @@ $(LIBRARY):
 
 test-linux-gfx:
 	@mkdir -p build
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/host/test_linux_gfx.c src/linux-gfx/ui.c src/linux-gfx/model.c \
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/host/test_linux_gfx.c src/linux-gfx/ui.c src/linux-gfx/model.c src/linux-gfx/diagnostics.c \
 	  src/common/bwc_interpolation_math.c src/common/embedded_shapes.c src/amiga/vector_outline.c \
 	  -o build/test_linux_gfx.host $(LDLIBS)
 	SDL_VIDEODRIVER=dummy build/test_linux_gfx.host
 
 test-linux-network:
 	@mkdir -p build
-	$(CC) $(CPPFLAGS) $(CFLAGS) tests/host/test_linux_protocol.c src/linux-gfx/protocol.c \
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/host/test_linux_protocol.c src/linux-gfx/protocol.c src/linux-gfx/diagnostics.c \
 	  -o build/test_linux_protocol.host $(LDLIBS)
 	build/test_linux_protocol.host
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/host/test_linux_network.c \
-	  src/linux-gfx/network.c src/linux-gfx/protocol.c src/linux-gfx/model.c \
+	  src/linux-gfx/network.c src/linux-gfx/protocol.c src/linux-gfx/model.c src/linux-gfx/diagnostics.c \
 	  src/common/add_client_csv.c src/common/shape_decode.c src/common/bwc_interpolation_math.c \
 	  -o build/test_linux_network.host $(LDLIBS)
 	build/test_linux_network.host

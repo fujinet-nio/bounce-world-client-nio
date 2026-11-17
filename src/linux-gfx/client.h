@@ -2,6 +2,7 @@
 #define BWC_GFX_CLIENT_H
 #include <SDL.h>
 #include "shape_decode.h"
+#include "diagnostics.h"
 
 #define GFX_WIDTH 960
 #define GFX_HEIGHT 576
@@ -20,6 +21,7 @@ typedef struct {
 } GfxSnapshot;
 typedef struct {
     GfxSettings settings;
+    GfxDiagnostics diagnostics;
     GfxSnapshot snapshot;
     unsigned width, height, bodies, clients;
     uint8_t sizes[5], frozen, wrapped;
@@ -33,6 +35,7 @@ typedef struct {
     SDL_mutex *mutex;
     SDL_Thread *thread;
     GfxState state;
+    GfxDiagnostics diagnostics; /* published independently during blocking IO */
     GfxSettings requested;
     int stop, connect, disconnect;
     char commands[32];

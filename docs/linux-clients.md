@@ -55,6 +55,7 @@ the library's normal meanings.
 | W | Show/hide connected pilots |
 | V | Switch shape outlines / block footprints (also in gallery) |
 | P | Toggle intermediate rendering |
+| O / F2 | Toggle network diagnostics (F2 also works on setup) |
 | D | Toggle the playfield theme |
 | L | Enable/disable a brief collision flash (off by default) |
 | Q / Escape | Disconnect and return to setup |
@@ -160,3 +161,84 @@ keyboard mappings were inspected but not changed in this graphical fix.
 
 Verification: `make linux-gfx test-linux-gfx` passed after sourcing the workspace
 environment. Tests use SDL dummy video; no desktop window was opened.
+
+## Live diagnostics and Pico soak testing
+
+Press **O** during play or **F2** on any screen to toggle the diagnostics overlay.
+On the setup screen, O remains an ordinary input character. An unexpected session
+failure opens the overlay automatically. F2 hides it so fields can be edited.
+Counters and the last disconnect cause survive returning to setup and reconnecting;
+restart the process to reset totals. The original disconnect cause is preserved
+even if `fn_close` subsequently fails. This instrumentation is Linux-gfx-only.
+
+For a soak run, keep the terminal error output:
+
+```sh
+FN_PORT=/path/to/port ./build/bwcn.linux-gfx 2>bwcn-gfx.log
+```
+
+The log records failures with elapsed time since launch, operation/command, symbolic
+and numeric error code, partial frame progress, stream offsets, flags and byte
+counts. It also records a summary after each session. It does not log every poll
+or reset counters on reconnect. No log file is created unless output is redirected.
+
+The overlay reports:
+
+- Attempts, successful connections, failed sessions and intentional exits.
+- Commands attempted, complete writes, complete framed replies, valid world replies
+  and published updates. A complete frame can still fail semantic validation, so
+  “frames OK” is not the same as a successful world snapshot. `close` is sent without
+  waiting for a reply, so successful write/frame totals need not match.
+- Read calls and successes, `BUSY`, `NOT_READY` and empty successful reads. Temporary
+  read statuses are counted separately from errors; they retain the current frame
+  and retry after 5 ms. A successful read call may deliver only part of a frame.
+- Application TCP-stream bytes sent/received, including command newlines and the
+  two-byte response prefix. These are bytes reported by `fn_write`/`fn_read`, including
+  reported partial progress on failure, **not** serial/FujiBus traffic. App-store and
+  transport framing overhead are excluded. “Other NIO” counts init/open/settings/close
+  API operations separately.
+- Recent TX/RX bytes per second, commands/second, valid world replies/second and
+  render FPS. These use roughly one-second wall-clock samples, including stalls;
+  rates fall to zero during inactivity. Totals and timestamps use 64-bit values.
+- Last/mean/max completed request latency (write through full reply), slow completed
+  replies (at least one second), and last/max read and write call durations.
+- Current operation and elapsed time while inside a library call, pending request
+  time, age of the last complete reply/world response, partial frame size and flags.
+  The worker publishes before entering a blocking call, so its elapsed time can
+  keep increasing in the foreground even when no network call returns.
+- Errors, NIO-returned timeouts, client reply-deadline expirations, malformed replies,
+  EOF flags and incomplete writes. A short write with `OK/0` means the library returned
+  success but fewer bytes than requested; the client rejects it. EOF can accompany
+  a complete successful frame and therefore is not necessarily a failed read.
+- Existing library write diagnostics: exchanges, transport retries, service retries,
+  zero-byte acceptances, and the last write-response length/device/command. These are
+  read from `fn_write_get_last_diagnostics()` without extra network traffic. Internal
+  read transport exchanges/retries are not exposed by these application counters.
+
+### Interpreting a pause or return to setup
+
+| Observation | What it establishes |
+| --- | --- |
+| FPS steady, `IN FLIGHT: fn_read` time rising | Rendering is alive; the library call has not returned |
+| `NOT_READY`/`BUSY` rising, pending request growing | Calls are returning temporarily unavailable; the client is retrying |
+| World replies continue but updates stop | Repeated server steps; check freeze state/server progress |
+| NIO timeout increases | A library API returned `FN_ERR_TIMEOUT`; this alone does not prove the Pico is at fault |
+| Client deadline increases | The client stopped waiting for the framed reply after its five-second budget |
+| Malformed increases | Frame length, expected response size, shape ID or body-ID validation failed |
+| Last disconnect cause | The exact failure that ended the session, retained through cleanup/reconnect |
+
+The five-second reply budget is checked between library calls and cannot interrupt
+a blocking call, so a session can take longer to end. Timeouts, I/O errors, EOF
+mid-frame, incomplete writes and invalid replies still end the session; this change
+makes that behavior observable rather than introducing automatic replay/reconnect.
+The library already retries transient writes. A timeout can leave command acceptance
+or stream offsets uncertain, so blindly resending `x-add-body`, `x-reset`, etc. would
+risk duplicate actions. The next recovery change should follow measured evidence.
+
+Validation on 2026-11-17: `make linux-gfx test-linux-gfx test-linux-network` passed
+after sourcing the workspace environment. Fault-injection tests cover exact traffic
+and result counts, temporary/empty reads, distinct timeout classes, partial writes,
+blocked-call publication, zero throughput while stalled, malformed input, retained
+root cause after a cleanup timeout, and reconnect persistence. SDL dummy-video tests
+cover toggling, automatic display on failure and retained display data; an off-screen
+screenshot was inspected. No live Pico soak run was performed by the agent.

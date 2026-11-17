@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include "client.h"
@@ -22,14 +23,52 @@ static void publish(GfxClient *c, const GfxState *s)
     c->state = *s;
     SDL_UnlockMutex(c->mutex);
 }
+static void publish_diagnostics(void *context, const GfxDiagnostics *d)
+{
+    GfxClient *c=context;
+    SDL_LockMutex(c->mutex);
+    c->diagnostics=*d;
+    SDL_UnlockMutex(c->mutex);
+}
+static void api_begin(GfxClient *c, GfxDiagnostics *d, const char *operation)
+{
+    d->command[0]=0;
+    ++d->other_calls;
+    gfx_diag_begin(d,operation); publish_diagnostics(c,d);
+}
+static void api_end(GfxClient *c, GfxDiagnostics *d, unsigned result)
+{
+    gfx_diag_end(d); d->last_code=result;
+    if (result==FN_OK) ++d->other_ok;
+    else {
+        if (result==FN_ERR_TIMEOUT) ++d->nio_timeouts;
+        gfx_diag_error(d,"NIO operation failed",result);
+    }
+    publish_diagnostics(c,d);
+}
+static void load_setting(GfxClient *c, GfxDiagnostics *d, char *buffer, uint8_t n, const char *key)
+{
+    api_begin(c,d,"load settings");
+    appstore_read_setting(buffer,n,key);
+    api_end(c,d,appstore_last_error());
+}
+static int save_setting(GfxClient *c, GfxDiagnostics *d, const char *value, const char *key)
+{
+    int ok;
+    api_begin(c,d,"save settings");
+    ok=appstore_write_setting(value,key);
+    api_end(c,d,appstore_last_error());
+    return ok;
+}
 static int reply(GfxWire *w, const char *command, int expected)
 {
     int n;
     if (gfx_wire_send(w, command) < 0) return -1;
     n = gfx_wire_reply(w);
     if (n >= 0 && expected >= 0 && n != expected) {
-        snprintf(w->error, sizeof(w->error), "Unexpected reply length for %s", command);
-        return -1;
+        char reason[120];
+        snprintf(reason,sizeof(reason),"Unexpected reply length: got %d, expected %d",n,expected);
+        return gfx_wire_invalid(w,reason);
     }
     return n;
 }
@@ -123,25 +162,28 @@ static int session(GfxClient *c, GfxWire *w, GfxState *s)
     unsigned id;
     uint8_t result;
     if (!gfx_settings_valid(&s->settings)) {
-        snprintf(w->error, sizeof(w->error), "Invalid destination, pilot or fetch interval");
-        return -1;
+        return gfx_wire_invalid(w,"Invalid destination, pilot or fetch interval");
     }
     snprintf(url, sizeof(url), "%s%s", strstr(s->settings.endpoint, "://") ? "" : "tcp://", s->settings.endpoint);
     if (cancelled(c)) return -1;
+    api_begin(c,w->diagnostics,"fn_open");
     result = fn_open(&w->handle, 0, url, FN_OPEN_STREAM_NO_PROBE);
+    api_end(c,w->diagnostics,result);
     if (result != FN_OK) {
         snprintf(w->error, sizeof(w->error), "Connect failed (NIO %u). Check FN_PORT and destination.", result);
         return -1;
     }
     if (!bwc_build_add_client_csv(csv, sizeof(csv), s->settings.name, 3,
-                                  GFX_WIDTH, GFX_HEIGHT, 40, 24, GFX_CAPS)) return -1;
+                                  GFX_WIDTH, GFX_HEIGHT, 40, 24, GFX_CAPS)) return gfx_wire_invalid(w,"Registration CSV overflow");
     snprintf(command, sizeof(command), "x-add-client %s", csv);
     if (reply(w, command, 1) < 0) return -1;
     id = w->packet[2];
-    if (!id) { snprintf(w->error, sizeof(w->error), "Server rejected registration"); return -1; }
+    if (!id) return gfx_wire_invalid(w,"Server rejected registration");
     if (world(w, s) < 0 || who(w, s) < 0) return -1;
     s->connecting = 0; s->connected = 1;
-    publish(c, s);
+    ++w->diagnostics->connections;
+    snprintf(w->diagnostics->end_reason,sizeof(w->diagnostics->end_reason),"Connected");
+    gfx_wire_notify(w); publish(c, s);
     while (!cancelled(c)) {
         int n;
         unsigned i;
@@ -156,7 +198,9 @@ static int session(GfxClient *c, GfxWire *w, GfxState *s)
         if (n < 0) return -1;
         /* Header: step, status, count; WIDE_COORDS + BODY_ID is 9 bytes. */
         if (n < 3 || n != 3 + w->packet[4] * 9) {
-            snprintf(w->error, sizeof(w->error), "Malformed world snapshot"); return -1;
+            char reason[120];
+            snprintf(reason,sizeof(reason),"Malformed world snapshot: bytes=%d count=%u",n,n>=3 ? w->packet[4] : 0);
+            return gfx_wire_invalid(w,reason);
         }
         status = w->packet[3];
         /* Decode before auxiliary requests overwrite the packet buffer. */
@@ -166,19 +210,28 @@ static int session(GfxClient *c, GfxWire *w, GfxState *s)
                 w->packet[4], GFX_CAPS, s->snapshot.shapes, GFX_MAX_SHAPES);
             for (i = 0; i < s->snapshot.count; ++i) {
                 if (s->snapshot.shapes[i].shape_id >= 19 || !s->snapshot.shapes[i].body_id) {
-                    snprintf(w->error, sizeof(w->error), "Unknown shape or missing body ID"); return -1;
+                    char reason[120];
+                    snprintf(reason,sizeof(reason),"Unknown shape or missing body ID: record=%u shape=%u body=%u",
+                        i,s->snapshot.shapes[i].shape_id,s->snapshot.shapes[i].body_id);
+                    return gfx_wire_invalid(w,reason);
                 }
             }
             s->snapshot.step = w->packet[2];
             s->snapshot.status = status;
             s->snapshot.time = SDL_GetTicks();
             ++s->snapshot.serial;
+            ++w->diagnostics->steps;
         }
+        ++w->diagnostics->worlds_ok;
+        w->diagnostics->last_world_at=SDL_GetTicks64();
+        gfx_wire_notify(w);
         if (status & COLLISION) ++s->collision_serial;
         if ((status & (CLIENT_CHANGE | OBJECT_CHANGE | FROZEN_TOGGLE)) && world(w, s) < 0) return -1;
         if ((status & CLIENT_CHANGE) && who(w, s) < 0) return -1;
         if ((status & CLIENT_CMD) && server_commands(w, s, id) < 0) return -1;
         publish(c, s);
+        snprintf(w->diagnostics->operation,sizeof(w->diagnostics->operation),"fetch pacing");
+        gfx_wire_notify(w);
         while (!cancelled(c) && SDL_GetTicks() - start < s->settings.interval) SDL_Delay(5);
     }
     /* Best effort deregistration after a clean stop. Do not wait for a reply. */
@@ -191,19 +244,25 @@ static int worker(void *context)
 {
     GfxClient *c = context;
     GfxState s;
+    GfxDiagnostics d;
     int initialized;
     uint8_t result;
     memset(&s, 0, sizeof(s));
+    memset(&d,0,sizeof(d)); d.started=SDL_GetTicks64();
     s.settings.interval = 100;
+    api_begin(c,&d,"fn_init");
     result = fn_init();
+    api_end(c,&d,result);
     initialized = result == FN_OK;
     if (initialized) {
         char interval[8];
-        appstore_read_setting(s.settings.endpoint, sizeof(s.settings.endpoint), APPSTORE_KEY_ENDPOINT);
+        load_setting(c,&d,s.settings.endpoint,sizeof(s.settings.endpoint),APPSTORE_KEY_ENDPOINT);
         if (cancelled(c)) goto done;
-        appstore_read_setting(s.settings.name, sizeof(s.settings.name), APPSTORE_KEY_NAME);
+        load_setting(c,&d,s.settings.name,sizeof(s.settings.name),APPSTORE_KEY_NAME);
         if (cancelled(c)) goto done;
-        if (appstore_read_setting(interval, sizeof(interval), APPSTORE_KEY_FETCH_INTERVAL)) {
+        interval[0]=0;
+        load_setting(c,&d,interval,sizeof(interval),APPSTORE_KEY_FETCH_INTERVAL);
+        if (interval[0]) {
             char *end;
             unsigned long n = strtoul(interval, &end, 10);
             if (!*end && n >= 10 && n <= 1000) s.settings.interval = (unsigned)n;
@@ -225,11 +284,16 @@ static int worker(void *context)
         if (!connect) { SDL_Delay(10); continue; }
         memset(&s.snapshot, 0, sizeof(s.snapshot));
         s.error[0] = s.warning[0] = s.message[0] = 0;
-        ++s.attempt;
+        ++s.attempt; ++d.attempts;
+        snprintf(d.end_reason,sizeof(d.end_reason),"Connecting");
+        publish_diagnostics(c,&d);
         s.connecting = 1; s.info = s.dark = 1; s.who = s.broadcast = 0;
         s.collision_serial = s.controls_serial = 0;
         publish(c, &s);
-        if (!initialized) { fn_shutdown(); initialized = fn_init() == FN_OK; }
+        if (!initialized) {
+            fn_shutdown(); api_begin(c,&d,"fn_init");
+            result=fn_init(); api_end(c,&d,result); initialized=result==FN_OK;
+        }
         if (initialized) {
             GfxWire wire;
             char interval[8];
@@ -237,18 +301,46 @@ static int worker(void *context)
             memset(&wire, 0, sizeof(wire));
             wire.handle = FN_INVALID_HANDLE;
             wire.cancelled = cancelled; wire.context = c;
+            wire.diagnostics=&d; wire.notify=publish_diagnostics;
             snprintf(interval, sizeof(interval), "%u", s.settings.interval);
             if (!cancelled(c) &&
-                (!appstore_write_setting(s.settings.endpoint, APPSTORE_KEY_ENDPOINT) ||
-                 (!cancelled(c) && !appstore_write_setting(s.settings.name, APPSTORE_KEY_NAME)) ||
-                 (!cancelled(c) && !appstore_write_setting(interval, APPSTORE_KEY_FETCH_INTERVAL))))
+                (!save_setting(c,&d,s.settings.endpoint,APPSTORE_KEY_ENDPOINT) ||
+                 (!cancelled(c) && !save_setting(c,&d,s.settings.name,APPSTORE_KEY_NAME)) ||
+                 (!cancelled(c) && !save_setting(c,&d,interval,APPSTORE_KEY_FETCH_INTERVAL))))
                 snprintf(s.warning, sizeof(s.warning), "Settings could not be saved (NIO %u)", appstore_last_error());
             session_result = session(c, &wire, &s);
-            if (session_result < 0 && !cancelled(c)) snprintf(s.error, sizeof(s.error), "%s", wire.error);
-            if (wire.handle != FN_INVALID_HANDLE) fn_close(wire.handle);
+            if (session_result < 0 && !cancelled(c)) {
+                ++d.drops; d.drop_at=d.failure_at;
+                snprintf(d.drop_error,sizeof(d.drop_error),"%s",d.last_error);
+                snprintf(d.drop_detail,sizeof(d.drop_detail),"%s",d.failure_detail);
+                snprintf(s.error,sizeof(s.error),"%s",wire.error);
+                snprintf(d.end_reason,sizeof(d.end_reason),"%s",wire.error);
+            } else {
+                ++d.cancellations;
+                snprintf(d.end_reason,sizeof(d.end_reason),"User requested disconnect/exit");
+            }
+            d.pending=0;
+            /* Publish immediately: cleanup can itself block for seconds. */
+            s.connected=s.connecting=0;
+            memset(&s.snapshot,0,sizeof(s.snapshot));
+            publish_diagnostics(c,&d); publish(c,&s);
+            if (wire.handle != FN_INVALID_HANDLE) {
+                api_begin(c,&d,"fn_close"); result=fn_close(wire.handle); api_end(c,&d,result);
+            }
             /* Reset transport after any session, including malformed framing. */
             fn_shutdown(); initialized = 0;
-        } else snprintf(s.error, sizeof(s.error), "Cannot open FujiNet. Check FN_PORT and retry.");
+        } else {
+            ++d.drops; d.drop_at=d.failure_at;
+            snprintf(d.drop_error,sizeof(d.drop_error),"%s",d.last_error);
+            snprintf(d.drop_detail,sizeof(d.drop_detail),"%s",d.failure_detail);
+            snprintf(s.error,sizeof(s.error),"Cannot open FujiNet (%s/%u). Check FN_PORT.",gfx_nio_result(result),result);
+            snprintf(d.end_reason,sizeof(d.end_reason),"%s",s.error);
+        }
+        snprintf(d.operation,sizeof(d.operation),"idle"); d.active=0;
+        publish_diagnostics(c,&d);
+        fprintf(stderr,"[bwc-gfx] session ended: %s; requests=%" PRIu64 " frames=%" PRIu64
+            " tx=%" PRIu64 " rx=%" PRIu64 " errors=%" PRIu64 " NIO-timeouts=%" PRIu64 " deadlines=%" PRIu64 "\n",
+            d.end_reason,d.requests,d.frames_ok,d.tx_bytes,d.rx_bytes,d.errors,d.nio_timeouts,d.deadlines);
         s.connected = s.connecting = 0;
         memset(&s.snapshot, 0, sizeof(s.snapshot));
         publish(c, &s);
@@ -269,7 +361,7 @@ int gfx_client_start(GfxClient *c)
     return 1;
 }
 void gfx_client_copy(GfxClient *c, GfxState *out)
-{ SDL_LockMutex(c->mutex); *out = c->state; SDL_UnlockMutex(c->mutex); }
+{ SDL_LockMutex(c->mutex); *out = c->state; out->diagnostics=c->diagnostics; SDL_UnlockMutex(c->mutex); }
 void gfx_client_connect(GfxClient *c, const GfxSettings *s)
 { SDL_LockMutex(c->mutex); c->requested = *s; c->disconnect = 0; c->connect = 1; SDL_UnlockMutex(c->mutex); }
 int gfx_client_command(GfxClient *c, char command)

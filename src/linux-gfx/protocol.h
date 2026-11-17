@@ -1,6 +1,7 @@
 #ifndef BWC_GFX_PROTOCOL_H
 #define BWC_GFX_PROTOCOL_H
 #include "fujinet-nio.h"
+#include "diagnostics.h"
 #define GFX_PACKET_MAX 2304
 /* All fields and all fn_* calls belong exclusively to the network worker. */
 typedef struct {
@@ -10,7 +11,12 @@ typedef struct {
     int (*cancelled)(void *context);
     void *context;
     char error[160];
+    GfxDiagnostics *diagnostics;
+    void (*notify)(void *context, const GfxDiagnostics *diagnostics);
+    uint32_t reply_timeout_ms; /* zero = production default, 5000 ms */
 } GfxWire;
+void gfx_wire_notify(GfxWire *wire);
+int gfx_wire_invalid(GfxWire *wire, const char *reason);
 int gfx_wire_send(GfxWire *wire, const char *command);
 int gfx_wire_reply(GfxWire *wire); /* payload length; payload at packet + 2 */
 #endif

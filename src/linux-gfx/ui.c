@@ -1,4 +1,6 @@
 #include <math.h>
+#include <inttypes.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -220,11 +222,78 @@ static void play(GfxUI *u, uint32_t now)
         text(u,24,650,line,ink,0);
     }
     text(u,24,679,"F freeze   R reset   +/- world   1-5 add   I info   W who   V shapes   P smooth",muted,0);
-    text(u,24,700,"D theme   L collision flash   Q / Esc leave",muted,0);
-    if (u->notice[0]) text(u,440,700,u->notice,(SDL_Color){255,180,95,255},0);
+    text(u,24,700,"D theme   L collision flash   O stats   Q / Esc leave",muted,0);
+    if (u->notice[0]) text(u,510,700,u->notice,(SDL_Color){255,180,95,255},0);
+}
+static void diag_line(GfxUI *u, int *y, SDL_Color c, const char *format, ...)
+{
+    char line[240];
+    va_list args;
+    va_start(args,format); vsnprintf(line,sizeof(line),format,args); va_end(args);
+    text(u,42,*y,line,c,0); *y+=23;
+}
+static void diag_wrapped(GfxUI *u, int *y, const char *value, SDL_Color c)
+{
+    /* At most three short lines for the retained failure. */
+    while (*value) {
+        char line[101];
+        size_t n=strlen(value);
+        if (n>100) n=100;
+        memcpy(line,value,n); line[n]=0;
+        diag_line(u,y,c,"%s",line); value+=n;
+    }
+}
+static void diagnostics(GfxUI *u, uint64_t now)
+{
+    const GfxDiagnostics *d=&u->state.diagnostics;
+    const GfxRates *r=&u->rates;
+    int y=87;
+    SDL_Color warning={255,180,95,255};
+    box(u,24,76,912,555,(SDL_Color){12,26,40,255},1);
+    box(u,24,76,912,555,cyan,0);
+    diag_line(u,&y,cyan,"NETWORK DIAGNOSTICS   /   F2 or O to hide   /   totals since launch");
+    diag_line(u,&y,ink,"Attempts %" PRIu64 "  connected %" PRIu64 "  failures %" PRIu64 "  user exits %" PRIu64 "  uptime %.1fs",
+        d->attempts,d->connections,d->drops,d->cancellations,(double)(now-d->started)/1000.0);
+    diag_line(u,&y,ink,"Requests %" PRIu64 "  writes OK %" PRIu64 "  frames OK %" PRIu64 "  world replies %" PRIu64 "  updates %" PRIu64,
+        d->requests,d->writes_ok,d->frames_ok,d->worlds_ok,d->steps);
+    diag_line(u,&y,ink,"Read calls %" PRIu64 "  OK %" PRIu64 "  BUSY %" PRIu64 "  NOT_READY %" PRIu64 "  empty %" PRIu64,
+        d->read_calls,d->reads_ok,d->busy,d->not_ready,d->empty_reads);
+    diag_line(u,&y,ink,"Stream bytes TX %" PRIu64 "  RX %" PRIu64 "  /  recent TX %.0f B/s  RX %.0f B/s",
+        d->tx_bytes,d->rx_bytes,r->tx_per_second,r->rx_per_second);
+    diag_line(u,&y,ink,"Recent: %.1f requests/s  %.1f world replies/s  %.1f render FPS  (1s samples)",
+        r->requests_per_second,r->worlds_per_second,r->fps);
+    diag_line(u,&y,warning,"Errors %" PRIu64 "  NIO timeouts %" PRIu64 "  client deadlines %" PRIu64 "  malformed %" PRIu64,
+        d->errors,d->nio_timeouts,d->deadlines,d->malformed);
+    diag_line(u,&y,ink,"EOF flags %" PRIu64 "  short writes %" PRIu64 "  slow replies (>=1s) %" PRIu64,
+        d->eof,d->partial_writes,d->slow_requests);
+    diag_line(u,&y,ink,"Request ms last/mean/max: %" PRIu64 " / %.1f / %" PRIu64 "   pending: %" PRIu64 "ms",
+        d->request_ms,d->frames_ok ? (double)d->request_total_ms/d->frames_ok : 0,d->request_max_ms,
+        d->pending ? now-d->request_at : 0);
+    diag_line(u,&y,ink,"Read ms last/max: %" PRIu64 "/%" PRIu64 "   Write ms last/max: %" PRIu64 "/%" PRIu64,
+        d->read_ms,d->read_max_ms,d->write_ms,d->write_max_ms);
+    diag_line(u,&y,cyan,"%s: %s / %s  (%" PRIu64 "ms)  last result %s/%u",
+        d->active ? "IN FLIGHT" : "Last/idle",d->command,d->operation,
+        d->active ? now-d->operation_at : d->operation_last_ms,gfx_nio_result(d->last_code),d->last_code);
+    diag_line(u,&y,ink,"Last reply age %.2fs  world age %.2fs  frame bytes %u/%u  flags 0x%02x",
+        d->frames_ok ? (double)(now-d->last_reply_at)/1000.0 : 0,
+        d->worlds_ok ? (double)(now-d->last_world_at)/1000.0 : 0,d->received,d->expected,d->last_flags);
+    diag_line(u,&y,ink,"Write internals: exchanges %" PRIu64 "  transport retries %" PRIu64 "  service retries %" PRIu64 "  zero %" PRIu64,
+        d->write_exchanges,d->transport_retries,d->service_retries,d->zero_accepted);
+    diag_line(u,&y,muted,"Last write response: length %u device 0x%02x command 0x%02x  other NIO OK/calls %" PRIu64 "/%" PRIu64,
+        d->response_length,d->response_device,d->response_command,d->other_ok,d->other_calls);
+    diag_line(u,&y,warning,"Session: %.100s",d->end_reason[0] ? d->end_reason : "Not connected");
+    if (d->failure_serial) {
+        diag_line(u,&y,warning,"%s (%.1fs ago):",d->drop_error[0] ? "Last disconnect cause" : "Last error",
+            (double)(now-(d->drop_error[0] ? d->drop_at : d->failure_at))/1000.0);
+        diag_wrapped(u,&y,d->drop_error[0] ? d->drop_error : d->last_error,warning);
+        diag_wrapped(u,&y,d->drop_error[0] ? d->drop_detail : d->failure_detail,muted);
+    }
+    diag_line(u,&y,muted,"TCP stream counts, not serial-wire bytes. Failures also go to stderr.");
 }
 void gfx_ui_draw(GfxUI *u, uint32_t now)
 {
+    uint64_t wall_now=SDL_GetTicks64();
+    gfx_rates_sample(&u->rates,&u->state.diagnostics,wall_now,++u->diagnostic_frames);
     color(u,(SDL_Color){9,20,32,255}); SDL_RenderClear(u->renderer);
     stars(u,now);
     if (u->phase == UI_SETUP) setup(u,now);
@@ -238,11 +307,14 @@ void gfx_ui_draw(GfxUI *u, uint32_t now)
     }
     box(u,0,0,960,64,(SDL_Color){17,33,49,255},1);
     text(u,24,12,"BOUNCY WORLD",ink,1);
-    text(u,600,23,u->demo ? "DEMO  /  NO NETWORK" : "FUJINET NIO   /   LINUX GFX",cyan,0);
+    text(u,600,23,u->demo ? "DEMO  /  NO NETWORK" : "FUJINET NIO   /   F2 STATS",cyan,0);
+    if (u->diagnostics_visible) diagnostics(u,wall_now);
 }
 void gfx_ui_update(GfxUI *u, const GfxState *s)
 {
     u->state = *s;
+    if (s->diagnostics.drops>u->seen_drops) u->diagnostics_visible=1;
+    u->seen_drops=s->diagnostics.drops;
     if (!u->loaded && s->ready) {
         u->settings = s->settings;
         snprintf(u->interval,sizeof(u->interval),"%u",s->settings.interval);
@@ -305,6 +377,10 @@ int gfx_ui_event(GfxUI *u, const SDL_Event *e)
     }
     if (e->type != SDL_KEYDOWN) return UI_NONE;
     key = e->key.keysym.sym;
+    if (!e->key.repeat && (key==SDLK_F2 || (key==SDLK_o && u->phase!=UI_SETUP))) {
+        u->diagnostics_visible=!u->diagnostics_visible;
+        return UI_NONE;
+    }
     /* Repeat edits/navigation, never launch or repeat world commands. */
     if (e->key.repeat && (u->phase != UI_SETUP ||
         (key != SDLK_LEFT && key != SDLK_RIGHT && key != SDLK_HOME &&

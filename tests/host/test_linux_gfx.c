@@ -120,6 +120,29 @@ int main(void)
     SDL_RenderSetLogicalSize(r,960,720);
     { float x,y; SDL_RenderWindowToLogical(r,640,360,&x,&y); assert(x>479 && x<481 && y>359 && y<361); }
     assert(key(&u,SDLK_q)==UI_DISCONNECT);
+    { GfxState failed=u.state; GfxDiagnostics *d=&failed.diagnostics;
+      failed.connected=0; d->drops=1; d->failure_serial=1; d->errors=2;
+      d->nio_timeouts=1; d->attempts=1; d->connections=1;
+      d->requests=142; d->writes_ok=142; d->frames_ok=141; d->worlds_ok=130;
+      d->tx_bytes=910; d->rx_bytes=84720; d->read_calls=390; d->not_ready=210;
+      d->failure_at=d->drop_at=SDL_GetTicks64();
+      strcpy(d->operation,"idle");
+      strcpy(d->end_reason,"Read failed (TIMEOUT/6)");
+      strcpy(d->drop_error,"x-w / fn_read: Read failed [TIMEOUT/6]");
+      strcpy(d->drop_detail,"op=2040ms request=2050ms frame=0/0 RX/TX offset=84720/910 flags=0x00 bytes=0/2304");
+      gfx_ui_update(&u,&failed);
+      assert(u.phase==UI_SETUP && u.diagnostics_visible);
+      assert(key(&u,SDLK_F2)==UI_NONE && !u.diagnostics_visible);
+      assert(key(&u,SDLK_o)==UI_NONE && !u.diagnostics_visible); /* setup text key */
+      assert(key(&u,SDLK_F2)==UI_NONE && u.diagnostics_visible);
+      gfx_ui_update(&u,&failed); assert(strstr(u.state.diagnostics.drop_error,"TIMEOUT"));
+      SDL_SetWindowSize(w,960,720); SDL_RenderSetLogicalSize(r,960,720);
+      capture(&u,b);
+      SDL_Surface *shot=SDL_CreateRGBSurfaceWithFormatFrom(b,960,720,32,960*4,SDL_PIXELFORMAT_ARGB8888);
+      assert(shot && SDL_SaveBMP(shot,"build/test_linux_diagnostics.bmp")==0); SDL_FreeSurface(shot);
+      key(&u,SDLK_F2); capture(&u,a); assert(memcmp(a,b,960*720*4));
+      u.phase=UI_PLAY; key(&u,SDLK_o); assert(u.diagnostics_visible);
+    }
     { SDL_Event e; memset(&e,0,sizeof(e)); e.type=SDL_QUIT; assert(gfx_ui_event(&u,&e)==UI_QUIT); }
     gfx_ui_destroy(&u); SDL_DestroyRenderer(r); SDL_DestroyWindow(w); TTF_Quit(); SDL_Quit();
     free(a); free(b);

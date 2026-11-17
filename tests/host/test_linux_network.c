@@ -9,7 +9,7 @@
 #include "status.h"
 
 static SDL_threadID owner;
-static SDL_atomic_t stalled, snapshots, scenario;
+static SDL_atomic_t stalled, snapshots, scenario, block_read, read_entered, read_release;
 static uint8_t input[GFX_PACKET_MAX];
 static unsigned size, position, offset_in, offset_out, step;
 static char log_commands[128][160];
@@ -28,11 +28,13 @@ uint8_t fn_open(fn_handle_t *h,uint8_t mode,const char *url,uint8_t flags)
     owned(); assert(mode==0 && flags==FN_OPEN_STREAM_NO_PROBE && !strcmp(url,"tcp://test:9003"));
     *h=1; size=position=offset_in=offset_out=step=0; return FN_OK;
 }
-uint8_t fn_close(fn_handle_t h) { owned(); assert(h==1); return FN_OK; }
+uint8_t fn_close(fn_handle_t h) { owned(); assert(h==1); return SDL_AtomicGet(&scenario)==1 ? FN_ERR_TIMEOUT : FN_OK; }
 bool appstore_read_setting(char *s,uint8_t n,const char *key)
 { owned(); snprintf(s,n,"%s",!strcmp(key,APPSTORE_KEY_ENDPOINT)?"test:9003":!strcmp(key,APPSTORE_KEY_NAME)?"PILOT":"10"); return true; }
 bool appstore_write_setting(const char *s,const char *key) { owned(); assert(*s && *key); return true; }
 uint8_t appstore_last_error(void) { return FN_OK; }
+void fn_write_get_last_diagnostics(fn_write_diagnostics_t *d)
+{ memset(d,0,sizeof(*d)); d->exchanges=1; }
 uint8_t fn_write(fn_handle_t h,uint32_t o,const uint8_t *data,uint16_t n,uint16_t *written)
 {
     char cmd[160]; uint8_t payload[GFX_PACKET_MAX-2]={0};
@@ -71,6 +73,11 @@ uint8_t fn_read(fn_handle_t h,uint32_t o,uint8_t *p,uint16_t max,uint16_t *got,u
 {
     unsigned n;
     owned(); assert(h==1 && o==offset_in); *got=0; *flags=0;
+    if (SDL_AtomicGet(&block_read)) {
+        SDL_AtomicSet(&read_entered,1);
+        while (!SDL_AtomicGet(&read_release)) SDL_Delay(1);
+        SDL_AtomicSet(&block_read,0);
+    }
     if (SDL_AtomicGet(&stalled)) return FN_ERR_NOT_READY;
     n=size-position; if (n>2) n=2; if (n>max) n=max;
     assert(n); memcpy(p,input+position,n); position+=n; offset_in+=n; *got=(uint16_t)n;
@@ -97,10 +104,22 @@ int main(void)
     gfx_client_connect(&c,&s.settings); s=wait_state(&c,1);
     assert(s.snapshot.count==1 && s.snapshot.shapes[0].body_id==42);
     assert(s.who && s.info && s.broadcast && !strcmp(s.message,"HELLO") && s.collision_serial==1);
+    /* Stats are published BEFORE entering a genuinely blocked library call. */
+    SDL_AtomicSet(&block_read,1);
+    { uint32_t start=SDL_GetTicks();
+      while (!SDL_AtomicGet(&read_entered) && SDL_GetTicks()-start<1000) SDL_Delay(1); }
+    assert(SDL_AtomicGet(&read_entered));
+    gfx_client_copy(&c,&s);
+    assert(s.diagnostics.active && !strcmp(s.diagnostics.operation,"fn_read"));
+    SDL_Delay(30);
+    assert(SDL_GetTicks64()-s.diagnostics.operation_at>=30);
+    SDL_AtomicSet(&read_release,1);
     /* Keep foreground access responsive while a worker read stalls. */
     SDL_AtomicSet(&stalled,1);
     assert(gfx_client_command(&c,'f')); assert(gfx_client_command(&c,'3'));
     for (i=0;i<100;++i) { gfx_client_copy(&c,&s); SDL_Delay(1); }
+    assert(s.diagnostics.read_calls>0 && s.diagnostics.not_ready>0 && s.diagnostics.errors==0);
+    assert(s.diagnostics.connections==1 && s.diagnostics.worlds_ok>0);
     SDL_AtomicSet(&stalled,0);
     { uint32_t start=SDL_GetTicks(); do { gfx_client_copy(&c,&s); SDL_Delay(1); }
       while ((s.snapshot.serial<2 || s.snapshot.count!=0) && SDL_GetTicks()-start<3000); }
@@ -116,10 +135,17 @@ int main(void)
     SDL_AtomicSet(&stalled,0); SDL_AtomicSet(&scenario,1);
     assert(gfx_client_start(&c)); s=wait_state(&c,0); gfx_client_connect(&c,&s.settings);
     s=wait_state(&c,2); assert(strstr(s.error,"Malformed") && s.snapshot.count==0 && !s.connected);
+    { uint32_t start=SDL_GetTicks();
+      do { gfx_client_copy(&c,&s); SDL_Delay(1); }
+      while (s.diagnostics.nio_timeouts==0 && SDL_GetTicks()-start<1000); }
+    assert(s.diagnostics.drops==1 && s.diagnostics.malformed==1 && s.diagnostics.nio_timeouts==1);
+    assert(strstr(s.diagnostics.drop_error,"Malformed") && strstr(s.diagnostics.last_error,"fn_close"));
     SDL_AtomicSet(&scenario,2);
     gfx_client_connect(&c,&s.settings); s=wait_state(&c,1);
     assert(s.connected && !s.error[0] && s.attempt==2 && s.snapshot.count==255);
     assert(s.snapshot.shapes[254].body_id==255);
+    assert(s.diagnostics.attempts==2 && s.diagnostics.connections==2 && s.diagnostics.drops==1);
+    assert(strstr(s.diagnostics.drop_error,"Malformed"));
     gfx_client_stop(&c); wait_state(&c,3); gfx_client_destroy(&c);
     SDL_Quit(); puts("Network worker ownership, commands, status events, empty/malformed snapshots and cancellation: PASS");
     return 0;
