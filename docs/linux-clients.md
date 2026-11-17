@@ -242,3 +242,22 @@ blocked-call publication, zero throughput while stalled, malformed input, retain
 root cause after a cleanup timeout, and reconnect persistence. SDL dummy-video tests
 cover toggling, automatic display on failure and retained display data; an off-screen
 screenshot was inspected. No live Pico soak run was performed by the agent.
+
+### Authored graphical shapes
+
+Both graphical renderers now use the same fixed vectors in
+`src/amiga/vector_outline.c` (`vo_authored`), indexed 0–18. Coordinates use
+four units per world cell, preserving the server's footprints while placing
+box-drawing strokes through character centres. Runtime bitmap silhouette
+tracing and the Amiga example overrides are no longer used for rendering.
+
+Disconnected dots, crossing strokes, diamonds, stars and the WW/MM and hash
+patterns retain their original structure. The seven single-cell shapes use
+small scalable symbols (star, ring, hash, X, stylized @, V, caret), not font
+glyphs. Two-point contours are independent strokes; longer contours close.
+Text shapes and network shape data remain unchanged. Block mode remains
+available as a separate presentation option.
+
+Validation: Linux graphical build and SDL tests, host vector/bounds tests,
+Amiga wb31 and wb32 builds, and an inspected dummy-video gallery capture.
+Amiga on-device visual acceptance and the ongoing Pico soak remain pending.

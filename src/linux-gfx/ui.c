@@ -56,7 +56,7 @@ int gfx_ui_init(GfxUI *u, SDL_Renderer *renderer)
         unsigned id = embedded_shape_data[offset++], w = embedded_shape_data[offset++];
         if (id >= 19 || !w || offset + w*w > embedded_shape_data_len) break;
         u->widths[id] = (uint8_t)w; u->cells[id] = embedded_shape_data + offset;
-        vo_trace(u->cells[id], (uint8_t)w, &u->outlines[id]);
+        vo_authored((uint8_t)id, &u->outlines[id]);
         offset += w*w;
     }
     return 1;
@@ -84,7 +84,7 @@ static void shape(GfxUI *u, unsigned id, float x, float y, float cell)
         SDL_FPoint pts[VO_MAX_PTS+1];
         for (i = 0; i < o->contour_len[c]; ++i) {
             vo_point p = o->pts[o->contour_start[c]+i];
-            pts[i] = (SDL_FPoint){x-half+p.x*cell,y-half+p.y*cell};
+            pts[i] = (SDL_FPoint){x-half+p.x*cell/4,y-half+p.y*cell/4};
         }
         pts[i] = pts[0];
         SDL_RenderDrawLinesF(u->renderer,pts,(int)i+1);

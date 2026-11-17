@@ -7,76 +7,6 @@
 #include "vector_outline.h"
 #include "data.h"
 
-/* ============================================================================
- * HAND-CRAFTED SHAPE VECTORS
- *
- * Shapes listed in s_hand_shapes[] are drawn from these hand-authored
- * vertex loops instead of the auto-traced cell bitmap. Design away:
- *
- *   - Coordinates are lattice corners: integers 0..width, x rightward,
- *     y downward. The cell at column c, row r occupies the square
- *     (c,r)..(c+1,r+1). A 5x5 shape therefore spans 0..5.
- *   - Each loop is a closed polygon: the last vertex connects back to
- *     the first automatically. Pen down at loops[0].pts[0], line to
- *     every other vertex, close.
- *   - Holes are just inner loops - everything is stroked, nothing is
- *     filled, so winding direction does not matter.
- *   - Loop coordinates scale automatically: x by SCREEN_PIXEL_WIDTH/40,
- *     y by the runtime screen height/24. Author in the shape's own
- *     0..width grid and it lands correctly on PAL and NTSC.
- *
- * To design a shape: draw it on grid paper (0..width), walk the outline
- * clockwise, write down each corner, add inner loops for holes. Add an
- * entry to s_hand_shapes[] with your shape id. Shapes not in the table
- * fall back to the auto-traced bitmap outlines.
- * ========================================================================== */
-
-/* Example: 5x5 plus - arms one cell thick through the centre. */
-static const vo_point s_plus5_loop[] = {
-    {2, 0}, {3, 0}, {3, 2}, {5, 2}, {5, 3}, {3, 3},
-    {3, 5}, {2, 5}, {2, 3}, {0, 3}, {0, 2}, {2, 2}
-};
-
-/* Example: 5x5 hollow square - outer loop + inner hole loop. */
-static const vo_point s_hollow5_outer[] = {
-    {0, 0}, {5, 0}, {5, 5}, {0, 5}
-};
-static const vo_point s_hollow5_hole[] = {
-    {2, 2}, {3, 2}, {3, 3}, {2, 3}
-};
-
-typedef struct {
-    uint8_t len;
-    const vo_point *pts;
-} hand_loop;
-
-typedef struct {
-    uint8_t shape_id;
-    uint8_t loop_count;
-    const hand_loop *loops;
-} hand_shape;
-
-/* Key entries by the server's shape id (0..18). Adjust the ids below to
- * target the shapes you want to override. */
-static const hand_shape s_hand_shapes[] = {
-    /* shape 1: 5x5 plus */
-    { 1, 1, (const hand_loop[]) { { 12, s_plus5_loop } } },
-    /* shape 2: 5x5 hollow square */
-    { 2, 2, (const hand_loop[]) { { 4, s_hollow5_outer }, { 4, s_hollow5_hole } } },
-};
-
-static const hand_shape *hand_vector_for(uint8_t shape_id)
-{
-    uint8_t i;
-
-    for (i = 0; i < (uint8_t)(sizeof(s_hand_shapes) / sizeof(s_hand_shapes[0])); i++) {
-        if (s_hand_shapes[i].shape_id == shape_id) {
-            return &s_hand_shapes[i];
-        }
-    }
-    return NULL;
-}
-
 /* Stroke a closed loop as pixel lines, clipping each segment against the
  * screen. Wrapping worlds: the server sends one copy per visible wrap
  * with centres that may sit off-screen - segments are clipped with true
@@ -131,9 +61,9 @@ static void draw_vector(struct RastPort *rp, const vo_outline *ol,
 
             /* Unclamped: draw_contour_lines clips each segment against
              * the screen, preserving true slopes for off-screen centres. */
-            px_pts[i].x = (int16_t)(base_x + (int32_t)v->x * scale_x);
+            px_pts[i].x = (int16_t)(base_x + (int32_t)v->x * scale_x / 4);
             px_pts[i].y = (int16_t)(base_y +
-                (int32_t)v->y * height_px / REG_WORLD_HEIGHT);
+                (int32_t)v->y * height_px / (4 * REG_WORLD_HEIGHT));
         }
         draw_contour_lines(rp, px_pts, n);
     }
@@ -210,38 +140,7 @@ static void draw_shape_at(uint8_t shape_id, int16_t center_x, int16_t center_y,
         return;
     }
 
-    /* Hand-crafted override: authored loops win over the auto-traced
-     * bitmap outline. Same scaling and stroking as traced contours. */
-    {
-        const hand_shape *hand = hand_vector_for(shape_id);
-
-        if (hand != NULL) {
-            for (uint8_t c = 0; c < hand->loop_count; c++) {
-                static vo_point hand_pts[VO_MAX_PTS];
-                const hand_loop *loop = &hand->loops[c];
-                int32_t scale_x = SCREEN_PIXEL_WIDTH / REG_WORLD_WIDTH;
-                uint8_t i;
-
-                for (i = 0; i < loop->len; i++) {
-                    hand_pts[i].x = (int16_t)(base_x +
-                        (int32_t)loop->pts[i].x * scale_x);
-                    hand_pts[i].y = (int16_t)(base_y +
-                        (int32_t)loop->pts[i].y * (int32_t)h / REG_WORLD_HEIGHT);
-                }
-                draw_contour_lines(rp, hand_pts, loop->len);
-            }
-            return;
-        }
-    }
-
-    /* Vector mode: trace the embedded cell bitmap into closed contours and
-     * stroke them as pixel lines. Fully off-screen shapes are skipped;
-     * partial ones rely on the raster clip like the block path does. */
-    if (vo_trace(shape->shape_data, width, &outline) != 0 ||
-        outline.contour_count == 0) {
-        draw_block(rp, center_x, center_y, width);
-        return;
-    }
+    if (vo_authored(shape_id, &outline) != 0) return;
 
     if (base_x >= SCREEN_PIXEL_WIDTH || base_y >= (int32_t)h ||
         base_x + 2 * ((int32_t)width * SCREEN_PIXEL_WIDTH / REG_WORLD_WIDTH) < 0 ||

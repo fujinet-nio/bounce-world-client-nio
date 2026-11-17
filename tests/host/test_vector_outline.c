@@ -279,6 +279,26 @@ static void test_clip_segment(void)
 
 int main(void)
 {
+    {
+        unsigned id, c, i;
+        vo_outline outline;
+        for (id=0; id<19; ++id) {
+            unsigned width = id<2 ? 5 : id<5 ? 4 : id<9 ? 3 : id<12 ? 2 : 1;
+            CHECK_EQ_INT(vo_authored(id, &outline), 0, "authored id");
+            CHECK_EQ_INT(outline.contour_count > 0, 1, "visible shape");
+            for(c=0;c<outline.contour_count;++c)
+                for(i=0;i<outline.contour_len[c];++i) {
+                    vo_point p=outline.pts[outline.contour_start[c]+i];
+                    CHECK_EQ_INT(p.x>=0 && p.y>=0 && p.x<=4*width && p.y<=4*width,1,"authored bounds");
+                }
+        }
+        CHECK_EQ_INT(vo_authored(19,&outline),1,"unknown id");
+        vo_authored(6,&outline);
+        CHECK_EQ_INT(outline.contour_count,4,"four separate dots");
+        vo_authored(9,&outline);
+        CHECK_EQ_INT(outline.pts[0].x,4,"diamond apex");
+        CHECK_EQ_INT(outline.pts[0].y,0,"diamond apex");
+    }
     test_empty_bitmap();
     test_single_cell();
     test_plus_shape();

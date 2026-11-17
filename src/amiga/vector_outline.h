@@ -34,6 +34,9 @@ typedef struct {
     uint8_t  truncated; /* set when geometry exceeded the bounds above */
 } vo_outline;
 
+/* Fixed original vectors use four coordinate units per world cell. */
+int vo_authored(uint8_t id, vo_outline *out);
+
 /* Non-space byte marks a filled cell; out-of-bounds reads are empty. */
 uint8_t vo_cell_filled(const uint8_t *cells, uint8_t width, uint8_t x, uint8_t y);
 
