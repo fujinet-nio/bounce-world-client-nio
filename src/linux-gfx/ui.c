@@ -101,23 +101,58 @@ static void stars(GfxUI *u, uint32_t now)
         SDL_RenderDrawPoint(u->renderer,x,y);
     }
 }
+static char *field_value(GfxUI *u, unsigned index)
+{
+    return index == 0 ? u->settings.endpoint : index == 1 ? u->settings.name : u->interval;
+}
+static int field_width(GfxUI *u, const char *s, size_t begin, size_t end)
+{
+    char prefix[61];
+    int width = 0, height;
+    if (end <= begin) return 0;
+    memcpy(prefix,s+begin,end-begin);
+    prefix[end-begin] = 0;
+    TTF_SizeUTF8(u->font,prefix,&width,&height);
+    return width;
+}
+static void field_view(GfxUI *u, unsigned index)
+{
+    const char *s = field_value(u,index);
+    size_t n = strlen(s);
+    if (u->caret[index] > n) u->caret[index] = n;
+    if (u->scroll[index] > u->caret[index]) u->scroll[index] = u->caret[index];
+    while (field_width(u,s,u->scroll[index],u->caret[index]) > 500)
+        ++u->scroll[index];
+}
+static void field_click(GfxUI *u, unsigned index, int x)
+{
+    const char *s = field_value(u,index);
+    size_t n = strlen(s), at;
+    field_view(u,index);
+    at = u->scroll[index];
+    while (at < n) {
+        int left = field_width(u,s,u->scroll[index],at);
+        int right = field_width(u,s,u->scroll[index],at+1);
+        if (x-224 < (left+right)/2) break;
+        ++at;
+    }
+    u->caret[index] = at;
+    u->field = (int)index;
+}
 static void field(GfxUI *u, unsigned index, int y, const char *label, const char *value)
 {
-    const char *visible = value;
-    int width, height;
+    SDL_Rect clip = {224,y+26,512,41};
+    field_view(u,index);
     text(u,218,y,label,muted,0);
     box(u,210,y+25,540,43,(SDL_Color){12,26,40,255},1);
     box(u,210,y+25,540,43,(int)index == u->field ? cyan : muted,0);
-    while (*visible) {
-        TTF_SizeUTF8(u->font,visible,&width,&height);
-        if (width < 495) break;
-        ++visible;
-    }
-    text(u,224,y+35,visible,ink,0);
+    SDL_RenderSetClipRect(u->renderer,&clip);
+    text(u,224,y+35,value+u->scroll[index],ink,0);
     if ((int)index == u->field && (SDL_GetTicks()/500)%2 == 0) {
-        TTF_SizeUTF8(u->font,visible,&width,&height);
-        box(u,226+width,y+36,2,21,cyan,1);
+        int width = field_width(u,value,u->scroll[index],u->caret[index]);
+        box(u,224+width,y+36,2,21,cyan,1);
     }
+    SDL_RenderSetClipRect(u->renderer,NULL);
 }
 static void setup(GfxUI *u, uint32_t now)
 {
@@ -132,7 +167,7 @@ static void setup(GfxUI *u, uint32_t now)
     field(u,2,430,"SNAPSHOT INTERVAL  /  10-1000 ms",u->interval);
     box(u,210,530,540,44,cyan,1);
     text(u,292,541,"ENTER  /  EXPLORE THE SHAPES",(SDL_Color){10,27,40,255},0);
-    text(u,212,594,"Tab / click: choose field     Ctrl+A: clear     Esc: quit",muted,0);
+    text(u,212,594,"Tab: next field   Arrows / Home / End: move   Esc: quit",muted,0);
     text(u,35,670,u->notice[0] ? u->notice : !u->loaded ? "Loading saved settings from FujiNet..." : u->state.error, (SDL_Color){255,180,95,255},0);
 }
 static void gallery(GfxUI *u, uint32_t now)
@@ -211,6 +246,7 @@ void gfx_ui_update(GfxUI *u, const GfxState *s)
     if (!u->loaded && s->ready) {
         u->settings = s->settings;
         snprintf(u->interval,sizeof(u->interval),"%u",s->settings.interval);
+        for (unsigned i = 0; i < 3; ++i) u->caret[i] = strlen(field_value(u,i));
         u->loaded = 1;
     }
     if (u->phase == UI_CLOSING) return;
@@ -237,44 +273,72 @@ int gfx_ui_event(GfxUI *u, const SDL_Event *e)
 {
     SDL_Keycode key;
     if (e->type == SDL_QUIT) return UI_QUIT;
-    if (u->phase == UI_SETUP && e->type == SDL_MOUSEBUTTONDOWN) {
+    if (u->phase == UI_SETUP && u->loaded && e->type == SDL_MOUSEBUTTONDOWN && e->button.button == SDL_BUTTON_LEFT) {
         /* RenderSetLogicalSize already translates SDL mouse events. */
         float x = (float)e->button.x, y = (float)e->button.y;
         if (x >= 210 && x <= 750) {
-            if (y >= 281 && y < 324) u->field = 0;
-            if (y >= 368 && y < 411) u->field = 1;
-            if (y >= 455 && y < 498) u->field = 2;
+            if (y >= 281 && y < 324) field_click(u,0,(int)x);
+            if (y >= 368 && y < 411) field_click(u,1,(int)x);
+            if (y >= 455 && y < 498) field_click(u,2,(int)x);
             if (y >= 530 && y < 574) {
-                SDL_Event enter = {0}; enter.type = SDL_KEYDOWN; enter.key.keysym.sym = SDLK_RETURN;
+                SDL_Event enter; memset(&enter,0,sizeof(enter)); enter.type = SDL_KEYDOWN; enter.key.keysym.sym = SDLK_RETURN;
                 return gfx_ui_event(u,&enter);
             }
         }
     }
     if (u->phase == UI_SETUP && e->type == SDL_TEXTINPUT) {
-        char *s = u->field == 0 ? u->settings.endpoint : u->field == 1 ? u->settings.name : u->interval;
+        char *s = field_value(u,(unsigned)u->field);
         size_t limit = u->field == 0 ? 60 : u->field == 1 ? 8 : 4, n = strlen(s), i;
         if (!u->loaded) return UI_NONE;
+        field_view(u,(unsigned)u->field);
         for (i = 0; e->text.text[i] && n < limit; ++i) {
             unsigned char ch = (unsigned char)e->text.text[i];
             if (ch < 33 || ch > 126 || (u->field == 1 && ch == ',') ||
                 (u->field == 2 && (ch < '0' || ch > '9'))) continue;
-            s[n++] = (char)ch;
+            size_t at = u->caret[u->field];
+            memmove(s+at+1,s+at,n-at+1); /* includes terminator */
+            s[at] = (char)ch;
+            ++u->caret[u->field]; ++n;
         }
-        s[n] = 0; u->notice[0] = 0;
+        field_view(u,(unsigned)u->field);
+        u->notice[0] = 0;
     }
-    if (e->type != SDL_KEYDOWN || e->key.repeat) return UI_NONE;
+    if (e->type != SDL_KEYDOWN) return UI_NONE;
     key = e->key.keysym.sym;
+    /* Repeat edits/navigation, never launch or repeat world commands. */
+    if (e->key.repeat && (u->phase != UI_SETUP ||
+        (key != SDLK_LEFT && key != SDLK_RIGHT && key != SDLK_HOME &&
+         key != SDLK_END && key != SDLK_BACKSPACE && key != SDLK_DELETE))) return UI_NONE;
     if (key == SDLK_ESCAPE) {
         if (u->phase == UI_GALLERY) { u->phase = UI_SETUP; return UI_NONE; }
         if (u->phase == UI_PLAY || u->phase == UI_CONNECTING) return UI_DISCONNECT;
         return UI_QUIT;
     }
     if (u->phase == UI_SETUP) {
-        char *s = u->field == 0 ? u->settings.endpoint : u->field == 1 ? u->settings.name : u->interval;
+        char *s = field_value(u,(unsigned)u->field);
         if (!u->loaded) return UI_NONE;
-        if (key == SDLK_TAB) u->field = (u->field + (e->key.keysym.mod & KMOD_SHIFT ? 2 : 1)) % 3;
-        if (key == SDLK_BACKSPACE && *s) s[strlen(s)-1] = 0;
-        if (key == SDLK_a && (e->key.keysym.mod & KMOD_CTRL)) *s = 0;
+        size_t n = strlen(s), *at = &u->caret[u->field];
+        field_view(u,(unsigned)u->field);
+        switch (key) {
+            case SDLK_LEFT: if (*at) --*at; break;
+            case SDLK_RIGHT: if (*at < n) ++*at; break;
+            case SDLK_HOME: *at = 0; break;
+            case SDLK_END: *at = n; break;
+            case SDLK_BACKSPACE:
+                if (*at) { memmove(s+*at-1,s+*at,n-*at+1); --*at; }
+                break;
+            case SDLK_DELETE:
+                if (*at < n) memmove(s+*at,s+*at+1,n-*at);
+                break;
+            case SDLK_a:
+                if (e->key.keysym.mod & KMOD_CTRL) { *s = 0; *at = 0; }
+                break;
+            case SDLK_TAB:
+                u->field = (u->field + (e->key.keysym.mod & KMOD_SHIFT ? 2 : 1)) % 3;
+                break;
+            default: break;
+        }
+        field_view(u,(unsigned)u->field);
         if (key == SDLK_RETURN || key == SDLK_KP_ENTER) {
             u->settings.interval = (unsigned)strtoul(u->interval,NULL,10);
             if (gfx_settings_valid(&u->settings)) { u->phase = UI_GALLERY; u->notice[0] = 0; }

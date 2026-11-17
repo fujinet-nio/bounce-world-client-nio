@@ -26,8 +26,12 @@ terminal objects. Each process needs its own transport endpoint/session; do not
 open the same serial/PTY endpoint in both clients simultaneously.
 
 The graphical window loads saved settings in the background. Tab or click to
-select destination, pilot or interval; type to append, Backspace to erase, and
-Ctrl+A to clear the field. A long destination scrolls within its field. Enter
+select destination, pilot or interval. Left/Right and Home/End move the cursor;
+typing inserts at that position. Backspace erases before the cursor and Delete
+erases after it. Clicking a field positions the cursor at the clicked character;
+Ctrl+A clears the field. Each field remembers its cursor position, and long
+destinations scroll to keep the cursor visible. Navigation and deletion keys
+repeat when held. Enter
 opens the shape gallery; Enter again connects. Escape goes back. Use the framed
 server port, normally `tcp://localhost:9003`; the `tcp://` prefix is optional.
 Pilot names are 1–8 printable non-space characters, excluding commas. The fetch
@@ -144,3 +148,15 @@ make -f makefiles/linux-gfx.mk test-linux-gfx test-linux-network \
 Dummy-video world/gallery screenshots were inspected, and an actual desktop
 window rendered a 30-frame offline smoke run and exited successfully. No live
 FujiNet/Bouncy World server session was exercised for this change.
+
+### Graphical field editing — 2026-11-17
+
+Added cursor movement, insertion, forward/backward deletion, click positioning,
+per-field cursor positions and caret-aware horizontal scrolling. Regression tests
+exercise saved values, mid-string edits, boundaries, length limits, filtering,
+held keys and scrolling through the real SDL event handler. The shared legacy
+`get_line` and Atari `title_edit` remain end-only editors; their platform-specific
+keyboard mappings were inspected but not changed in this graphical fix.
+
+Verification: `make linux-gfx test-linux-gfx` passed after sourcing the workspace
+environment. Tests use SDL dummy video; no desktop window was opened.

@@ -6,8 +6,58 @@
 
 static int key(GfxUI *u, SDL_Keycode k)
 {
-    SDL_Event e = {0}; e.type = SDL_KEYDOWN; e.key.keysym.sym = k;
+    SDL_Event e; memset(&e,0,sizeof(e)); e.type = SDL_KEYDOWN; e.key.keysym.sym = k;
     return gfx_ui_event(u,&e);
+}
+static void type_text(GfxUI *u, const char *text)
+{
+    SDL_Event e; memset(&e,0,sizeof(e)); e.type = SDL_TEXTINPUT;
+    snprintf(e.text.text,sizeof(e.text.text),"%s",text);
+    assert(gfx_ui_event(u,&e)==UI_NONE);
+}
+static void editing(GfxUI *u)
+{
+    GfxState saved = {0};
+    saved.ready = 1; saved.settings.interval = 100;
+    strcpy(saved.settings.endpoint,"localhost:9003"); strcpy(saved.settings.name,"PILOT");
+    gfx_ui_update(u,&saved);
+    assert(u->caret[0]==14 && u->caret[1]==5 && u->caret[2]==3);
+    key(u,SDLK_HOME); key(u,SDLK_LEFT); key(u,SDLK_BACKSPACE);
+    assert(!strcmp(u->settings.endpoint,"localhost:9003") && u->caret[0]==0);
+    type_text(u,"tcp://");
+    assert(!strcmp(u->settings.endpoint,"tcp://localhost:9003") && u->caret[0]==6);
+    key(u,SDLK_DELETE); type_text(u,"L");
+    assert(!strcmp(u->settings.endpoint,"tcp://Localhost:9003"));
+    key(u,SDLK_BACKSPACE); type_text(u,"l");
+    key(u,SDLK_END); key(u,SDLK_RIGHT); key(u,SDLK_DELETE);
+    assert(u->caret[0]==strlen(u->settings.endpoint));
+    key(u,SDLK_LEFT); key(u,SDLK_BACKSPACE); type_text(u,"8");
+    assert(!strcmp(u->settings.endpoint,"tcp://localhost:9083"));
+    { SDL_Event e; memset(&e,0,sizeof(e)); e.type=SDL_KEYDOWN; e.key.keysym.sym=SDLK_LEFT; e.key.repeat=1;
+      size_t before=u->caret[0]; gfx_ui_event(u,&e); assert(u->caret[0]==before-1);
+      e.key.keysym.sym=SDLK_RETURN; gfx_ui_event(u,&e); assert(u->phase==UI_SETUP); }
+    { size_t before=u->caret[0];
+      key(u,SDLK_TAB); key(u,SDLK_HOME); type_text(u,"A,");
+      assert(!strcmp(u->settings.name,"APILOT") && u->caret[1]==1);
+      key(u,SDLK_TAB); key(u,SDLK_HOME); key(u,SDLK_DELETE); type_text(u,"2x");
+      assert(!strcmp(u->interval,"200") && u->caret[2]==1);
+      key(u,SDLK_TAB); assert(u->field==0 && u->caret[0]==before); }
+    /* Limit insertion without losing the existing suffix or terminator. */
+    memset(u->settings.endpoint,'W',60); u->settings.endpoint[60]=0;
+    key(u,SDLK_HOME); type_text(u,"X"); assert(strlen(u->settings.endpoint)==60 && u->caret[0]==0);
+    key(u,SDLK_DELETE); type_text(u,"XY");
+    assert(strlen(u->settings.endpoint)==60 && u->settings.endpoint[0]=='X' && u->settings.endpoint[1]=='W');
+    key(u,SDLK_END); gfx_ui_draw(u,1000); assert(u->scroll[0]>0);
+    key(u,SDLK_HOME); gfx_ui_draw(u,1000); assert(u->scroll[0]==0);
+    { SDL_Event e; memset(&e,0,sizeof(e)); e.type=SDL_MOUSEBUTTONDOWN; e.button.button=SDL_BUTTON_LEFT;
+      e.button.x=224; e.button.y=300; gfx_ui_event(u,&e); assert(u->caret[0]==0);
+      int width,height; TTF_SizeUTF8(u->font,"XW",&width,&height);
+      e.button.x=224+width; gfx_ui_event(u,&e); assert(u->caret[0]==2); }
+    { SDL_Event e; memset(&e,0,sizeof(e)); e.type=SDL_KEYDOWN; e.key.keysym.sym=SDLK_a; e.key.keysym.mod=KMOD_CTRL;
+      gfx_ui_event(u,&e); assert(!*u->settings.endpoint && u->caret[0]==0 && u->scroll[0]==0); }
+    type_text(u,"localhost:9003");
+    strcpy(u->settings.name,"PILOT"); strcpy(u->interval,"100");
+    u->notice[0]=0;
 }
 static void capture(GfxUI *u, uint32_t *pixels)
 {
@@ -28,7 +78,8 @@ int main(void)
     assert(w); r=SDL_CreateRenderer(w,-1,SDL_RENDERER_SOFTWARE); assert(r);
     SDL_RenderSetLogicalSize(r,960,720);
     assert(gfx_ui_init(&u,r));
-    u.loaded=1;
+    editing(&u);
+    u.settings.endpoint[0]=0;
     assert(key(&u,SDLK_RETURN)==UI_NONE && u.phase==UI_SETUP);
     strcpy(u.settings.endpoint,"localhost:9003"); strcpy(u.settings.name,"PILOT");
     assert(gfx_settings_valid(&u.settings));
@@ -69,7 +120,7 @@ int main(void)
     SDL_RenderSetLogicalSize(r,960,720);
     { float x,y; SDL_RenderWindowToLogical(r,640,360,&x,&y); assert(x>479 && x<481 && y>359 && y<361); }
     assert(key(&u,SDLK_q)==UI_DISCONNECT);
-    { SDL_Event e={0}; e.type=SDL_QUIT; assert(gfx_ui_event(&u,&e)==UI_QUIT); }
+    { SDL_Event e; memset(&e,0,sizeof(e)); e.type=SDL_QUIT; assert(gfx_ui_event(&u,&e)==UI_QUIT); }
     gfx_ui_destroy(&u); SDL_DestroyRenderer(r); SDL_DestroyWindow(w); TTF_Quit(); SDL_Quit();
     free(a); free(b);
     puts("SDL events, clipping, empty frames, resize and body-ID interpolation: PASS");

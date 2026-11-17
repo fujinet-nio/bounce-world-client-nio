@@ -17,6 +17,7 @@ typedef struct {
     int phase, field, loaded, info, who, dark, interpolate, blocks, flash, demo;
     uint32_t request_attempt, controls_serial, collision_serial, flash_until;
     char interval[5], notice[160], command;
+    size_t caret[3], scroll[3]; /* ASCII fields; independent editing positions */
 } GfxUI;
 int gfx_ui_init(GfxUI *ui, SDL_Renderer *renderer);
 void gfx_ui_destroy(GfxUI *ui);
